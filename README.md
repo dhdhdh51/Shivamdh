@@ -78,13 +78,20 @@ sudo systemctl restart game-load-bot
 sudo systemctl stop game-load-bot
 ```
 
-## Update an existing installation
+## Fix or update an existing installation
 
 ```bash
 cd ~/Shivamdh
 git pull origin feature/telegram-load-tester
 bash setup.sh
 sudo systemctl restart game-load-bot
+sudo systemctl status game-load-bot --no-pager
+```
+
+This upgrades `python-telegram-bot` to the Python 3.13-compatible release pinned by the project. If startup still fails, inspect logs:
+
+```bash
+sudo journalctl -u game-load-bot -n 50 --no-pager
 ```
 
 To change allowed users or targets later:
