@@ -21,13 +21,19 @@ from telegram.ext import (
 )
 
 from load_engine import MAX_DURATION_SECONDS, MAX_PPS, LoadSnapshot, UdpLoadTest
+from target_verification import (
+    DEFAULT_VERIFIER_PORT,
+    load_verified_targets,
+    save_verified_target,
+    verify_target,
+)
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
 )
 LOGGER = logging.getLogger(__name__)
 
-TARGET, PORT, PPS, DURATION = range(4)
+TARGET, PORT, PPS, DURATION, ADD_TARGET = range(5)
 ACTIVE_TEST_KEY: Final = "active_test"
 ACTIVE_TASK_KEY: Final = "active_task"
 OWNER_KEY: Final = "test_owner"
@@ -49,6 +55,10 @@ def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("▶️ Start UDP test", callback_data="new_udp")],
+            [
+                InlineKeyboardButton("➕ Add server", callback_data="add_target"),
+                InlineKeyboardButton("📋 Servers", callback_data="list_targets"),
+            ],
             [
                 InlineKeyboardButton("📊 Status", callback_data="status"),
                 InlineKeyboardButton("⏹ Stop", callback_data="stop"),
@@ -85,7 +95,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.effective_message.reply_text(
         "🎮 <b>Game Server Load Bot</b>\n\n"
-        "Runs a bounded UDP simulation against an explicitly allowlisted server.",
+        "Runs a bounded UDP simulation against a server verified by your private agent.",
         parse_mode="HTML",
         reply_markup=main_keyboard(),
     )
@@ -109,9 +119,10 @@ async def begin_udp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def receive_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     target = update.effective_message.text.strip().lower()
     allowlist = {item.lower() for item in parse_csv_env("TARGET_ALLOWLIST")}
+    allowlist.update(load_verified_targets())
     if target not in allowlist:
         await update.effective_message.reply_text(
-            "Target is not in TARGET_ALLOWLIST. Add only a server you own to .env, restart the bot, and try again."
+            "Server is not authorized. Tap Add server first and complete proof-of-control verification."
         )
         return TARGET
     context.user_data["draft"].target = target
@@ -267,6 +278,9 @@ async def stop_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cancel_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not authorized(update):
+        await reject_unauthorized(update)
+        return -1
     context.user_data.pop("draft", None)
     context.user_data.pop("step", None)
     if update.callback_query:
@@ -275,6 +289,76 @@ async def cancel_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     else:
         await update.effective_message.reply_text("Cancelled.", reply_markup=main_keyboard())
     return -1
+
+
+async def begin_add_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    if not authorized(update):
+        await reject_unauthorized(update)
+        return -1
+    context.user_data.pop("draft", None)
+    context.user_data["step"] = ADD_TARGET
+    await query.edit_message_text(
+        "Send the IP or hostname of a server running verifier_agent.py. "
+        "The bot will authorize it only after proof-of-control succeeds."
+    )
+    return ADD_TARGET
+
+
+async def receive_add_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    target = update.effective_message.text.strip().lower()
+    if not target or len(target) > 253:
+        await update.effective_message.reply_text("Enter a valid IP address or hostname.")
+        return ADD_TARGET
+
+    await update.effective_message.reply_text("🔐 Checking proof of control…")
+    secret = os.environ["VERIFICATION_SECRET"]
+    port = int(os.getenv("VERIFIER_PORT", str(DEFAULT_VERIFIER_PORT)))
+    try:
+        verified = await asyncio.to_thread(verify_target, target, secret, port)
+    except (OSError, ValueError):
+        verified = False
+
+    if not verified:
+        await update.effective_message.reply_text(
+            "❌ Verification failed. Start verifier_agent.py on that server and allow "
+            f"UDP {port} only from this bot server's public IP.",
+            reply_markup=main_keyboard(),
+        )
+        return ADD_TARGET
+
+    save_verified_target(target)
+    context.user_data.pop("step", None)
+    await update.effective_message.reply_text(
+        f"✅ <code>{html.escape(target)}</code> is now authorized.",
+        parse_mode="HTML",
+        reply_markup=main_keyboard(),
+    )
+    return -1
+
+
+async def list_targets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not authorized(update):
+        await reject_unauthorized(update)
+        return
+    if update.callback_query:
+        await update.callback_query.answer()
+    targets = {item.lower() for item in parse_csv_env("TARGET_ALLOWLIST")}
+    targets.update(load_verified_targets())
+    text = "<b>Authorized servers</b>\n" + (
+        "\n".join(f"• <code>{html.escape(item)}</code>" for item in sorted(targets))
+        if targets
+        else "None yet. Tap Add server."
+    )
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            text, parse_mode="HTML", reply_markup=main_keyboard()
+        )
+    else:
+        await update.effective_message.reply_text(
+            text, parse_mode="HTML", reply_markup=main_keyboard()
+        )
 
 
 async def route_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -287,6 +371,7 @@ async def route_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         PORT: receive_port,
         PPS: receive_pps,
         DURATION: receive_duration,
+        ADD_TARGET: receive_add_target,
     }
     handler = handlers.get(context.user_data.get("step"))
     if handler:
@@ -302,8 +387,11 @@ def build_application(token: str) -> Application:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("status", show_status))
     application.add_handler(CommandHandler("stop", stop_test))
+    application.add_handler(CommandHandler("targets", list_targets))
     application.add_handler(CommandHandler("cancel", cancel_draft))
     application.add_handler(CallbackQueryHandler(begin_udp, pattern="^new_udp$"))
+    application.add_handler(CallbackQueryHandler(begin_add_target, pattern="^add_target$"))
+    application.add_handler(CallbackQueryHandler(list_targets, pattern="^list_targets$"))
     application.add_handler(CallbackQueryHandler(confirm_run, pattern="^confirm_run$"))
     application.add_handler(CallbackQueryHandler(cancel_draft, pattern="^cancel_draft$"))
     application.add_handler(CallbackQueryHandler(show_status, pattern="^status$"))
@@ -316,13 +404,19 @@ def main() -> None:
     load_dotenv()
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     allowed_ids = parse_csv_env("ALLOWED_CHAT_IDS")
-    targets = parse_csv_env("TARGET_ALLOWLIST")
+    verification_secret = os.getenv("VERIFICATION_SECRET", "").strip()
+    verifier_port = os.getenv("VERIFIER_PORT", str(DEFAULT_VERIFIER_PORT))
     if not token or token == "replace-me":
         raise SystemExit("TELEGRAM_BOT_TOKEN is missing. Run setup.sh and edit .env.")
     if not allowed_ids or not all(item.lstrip("-").isdigit() for item in allowed_ids):
         raise SystemExit("ALLOWED_CHAT_IDS must contain numeric Telegram IDs.")
-    if not targets:
-        raise SystemExit("TARGET_ALLOWLIST is missing. Refusing arbitrary targets.")
+    if len(verification_secret) < 32 or verification_secret == "replace-with-a-long-random-secret":
+        raise SystemExit("VERIFICATION_SECRET must be a random value of at least 32 characters.")
+    try:
+        if not 1 <= int(verifier_port) <= 65535:
+            raise ValueError
+    except ValueError:
+        raise SystemExit("VERIFIER_PORT must be between 1 and 65535.") from None
     LOGGER.info("Starting private Telegram bot")
     build_application(token).run_polling(drop_pending_updates=True)
 
