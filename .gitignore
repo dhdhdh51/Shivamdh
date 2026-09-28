@@ -1,5 +1,4 @@
 .env
-.authorized_targets.json
 .venv/
 __pycache__/
 *.py[cod]

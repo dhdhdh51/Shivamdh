@@ -15,33 +15,7 @@ python3 -m venv .venv
 
 if [[ ! -f .env ]]; then
   cp .env.example .env
+  echo "Created .env. Add your bot token, Telegram ID, and authorized target."
 fi
 
-python3 <<'PY'
-from pathlib import Path
-import secrets
-
-path = Path('.env')
-lines = path.read_text().splitlines()
-values = {
-    line.split('=', 1)[0]: line.split('=', 1)[1]
-    for line in lines
-    if '=' in line and not line.lstrip().startswith('#')
-}
-secret = values.get('VERIFICATION_SECRET', '')
-if len(secret) < 32 or secret == 'replace-with-a-long-random-secret':
-    generated = secrets.token_urlsafe(32)
-    for index, line in enumerate(lines):
-        if line.startswith('VERIFICATION_SECRET='):
-            lines[index] = f'VERIFICATION_SECRET={generated}'
-            break
-    else:
-        lines.extend(['', f'VERIFICATION_SECRET={generated}'])
-if not any(line.startswith('VERIFIER_PORT=') for line in lines):
-    lines.append('VERIFIER_PORT=39001')
-path.write_text('\n'.join(lines) + '\n')
-PY
-
-chmod 600 .env
-echo "Environment ready. Add your bot token and Telegram ID; copy the verification secret to each game server."
-echo "Setup complete. Run the bot: .venv/bin/python bot.py"
+echo "Setup complete. Edit .env, then run: .venv/bin/python bot.py"

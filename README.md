@@ -1,85 +1,47 @@
 # Game Server Load Bot
 
-A private Telegram bot for bounded UDP load simulation against game servers you control. It provides button-driven target setup, live countdown/status, real cancellation, and completion results.
+A Telegram-controlled, bounded UDP load simulator for testing a game server you own. It provides button-driven setup, a live countdown/status screen, real cancellation, and completion results.
 
 ## Safety model
 
-- Only Telegram IDs in `ALLOWED_CHAT_IDS` can operate the bot.
-- New servers must prove control using `verifier_agent.py` and a shared secret.
-- Optional static servers may be listed in `TARGET_ALLOWLIST`.
-- Traffic is capped at 200 packets/second for 120 seconds.
-- Only one test can run at a time.
-- Packets contain the recognizable marker `GAME_LOAD_TEST_V1`.
+- Only Telegram IDs in `ALLOWED_CHAT_IDS` can use the bot.
+- Only exact targets in `TARGET_ALLOWLIST` can be tested.
+- UDP traffic is capped at 200 packets/second for 120 seconds.
+- One test may run at a time.
+- Packets carry the recognizable marker `GAME_LOAD_TEST_V1`.
 
-This is intended for controlled validation, not denial-of-service testing. Confirm your cloud provider's load-testing policy before use.
+This is intended for controlled validation, not denial-of-service testing. Confirm your cloud provider's load-testing policy before running it.
 
-## 1. Install the Telegram bot on EC2
+## EC2 setup
 
-Ubuntu 22.04/24.04 LTS with a free-tier micro instance is sufficient.
+Ubuntu 22.04/24.04 LTS with a free-tier micro instance is enough for the bot and bounded simulator.
 
 ```bash
-sudo apt update
-sudo apt install -y git python3 python3-venv
-git clone --branch feature/telegram-load-tester --single-branch https://github.com/dhdhdh51/Shivamdh.git
+git clone https://github.com/dhdhdh51/Shivamdh.git
 cd Shivamdh
+git checkout feature/telegram-load-tester
 bash setup.sh
 nano .env
+.venv/bin/python bot.py
 ```
 
-Set your bot token and numeric Telegram ID. `setup.sh` generates the verification secret automatically:
+In `.env`, set:
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=token-from-BotFather
 ALLOWED_CHAT_IDS=your-numeric-telegram-id
-TARGET_ALLOWLIST=
-VERIFICATION_SECRET=generated-secret
-VERIFIER_PORT=39001
+TARGET_ALLOWLIST=your-game-server-ip-or-hostname
 ```
 
-Start the bot:
+Do not open inbound ports for this bot. Telegram polling only needs outbound HTTPS. The UDP destination port must be accepted by your game server.
 
-```bash
-.venv/bin/python bot.py
-```
-
-Telegram polling needs only outbound HTTPS; do not expose an inbound web port for the bot.
-
-## 2. Install the verifier on your game server
-
-Clone the same branch and run setup on the game server:
-
-```bash
-git clone --branch feature/telegram-load-tester --single-branch https://github.com/dhdhdh51/Shivamdh.git
-cd Shivamdh
-bash setup.sh
-nano .env
-```
-
-Copy the exact `VERIFICATION_SECRET` from the bot server's `.env` into this server's `.env`, then start:
-
-```bash
-.venv/bin/python verifier_agent.py
-```
-
-Allow inbound UDP port `39001` on the game server **only from the bot EC2 instance's public IP**. The game UDP port must also accept traffic from the bot server.
-
-## 3. Telegram flow
+## Telegram flow
 
 1. Send `/start`.
-2. Tap **Add server** and enter its IP/hostname.
-3. The verifier proves control; the bot stores the server locally.
-4. Tap **Start UDP test**.
-5. Enter the verified server, game UDP port, desired PPS, and duration.
-6. Review the values and tap **Run test**.
-7. Use **Status** for elapsed/remaining time or **Stop** to cancel.
+2. Tap **Start UDP test**.
+3. Send the allowlisted server IP/hostname.
+4. Send the UDP port, desired PPS, and duration when prompted.
+5. Tap **Run test** after reviewing the values.
+6. Tap **Status** for elapsed/remaining time or **Stop** to cancel.
 
-Buttons are available only to configured Telegram operators. Commands: `/start`, `/targets`, `/status`, `/stop`, `/cancel`.
-
-## Update an existing EC2 checkout
-
-```bash
-cd ~/Shivamdh
-git pull origin feature/telegram-load-tester
-bash setup.sh
-sudo systemctl restart game-load-bot 2>/dev/null || true
-```
+Commands: `/start`, `/status`, `/stop`, `/cancel`.
