@@ -8,7 +8,8 @@ import time
 from dataclasses import dataclass
 
 MAX_PPS = 200
-MAX_DURATION_SECONDS = 120
+MAX_DURATION_SECONDS = 600
+MAX_TOTAL_PACKETS = 24_000
 PACKET_SIZE = 64
 
 
@@ -33,6 +34,12 @@ class UdpLoadTest:
         if not 1 <= duration <= MAX_DURATION_SECONDS:
             raise ValueError(
                 f"Duration must be between 1 and {MAX_DURATION_SECONDS} seconds."
+            )
+        if pps * duration > MAX_TOTAL_PACKETS:
+            max_duration = MAX_TOTAL_PACKETS // pps
+            raise ValueError(
+                f"This rate allows at most {max_duration} seconds "
+                f"({MAX_TOTAL_PACKETS} packets total)."
             )
 
         self.target = target

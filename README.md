@@ -6,7 +6,9 @@ A private Telegram bot for bounded UDP simulation against a game server you own.
 
 - Only Telegram IDs in `ALLOWED_CHAT_IDS` can use the bot.
 - Only exact IPs/hostnames manually listed in `TARGET_ALLOWLIST` can be tested.
-- UDP traffic is capped at 200 packets/second for 120 seconds.
+- UDP rate is capped at 200 packets/second.
+- Duration can be up to 600 seconds while total traffic remains capped at 24,000 packets.
+- At 600 seconds, the maximum permitted rate is 40 PPS.
 - One test may run at a time.
 - Packets carry the recognizable marker `GAME_LOAD_TEST_V1`.
 

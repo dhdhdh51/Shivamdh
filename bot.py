@@ -22,7 +22,13 @@ from telegram.ext import (
     filters,
 )
 
-from load_engine import MAX_DURATION_SECONDS, MAX_PPS, LoadSnapshot, UdpLoadTest
+from load_engine import (
+    MAX_DURATION_SECONDS,
+    MAX_PPS,
+    MAX_TOTAL_PACKETS,
+    LoadSnapshot,
+    UdpLoadTest,
+)
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -236,6 +242,14 @@ async def receive_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return DURATION
 
     draft: DraftTest = context.user_data["draft"]
+    if draft.pps * value > MAX_TOTAL_PACKETS:
+        max_duration = MAX_TOTAL_PACKETS // draft.pps
+        await update.effective_message.reply_text(
+            f"At {draft.pps} PPS, maximum duration is {max_duration} seconds "
+            f"({MAX_TOTAL_PACKETS} packets total). For 600 seconds, use 40 PPS or less."
+        )
+        return DURATION
+
     draft.duration = value
     context.user_data.pop("step", None)
     await update.effective_message.reply_text(
