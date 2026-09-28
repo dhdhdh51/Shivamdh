@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final
 
 from dotenv import load_dotenv
@@ -31,6 +33,44 @@ TARGET, PORT, PPS, DURATION = range(4)
 ACTIVE_TEST_KEY: Final = "active_test"
 ACTIVE_TASK_KEY: Final = "active_task"
 OWNER_KEY: Final = "test_owner"
+
+PENDING_TARGETS_FILE: Final = Path(__file__).resolve().parent / "pending_targets.json"
+
+
+def load_target_store() -> dict:
+    if not PENDING_TARGETS_FILE.exists():
+        return {}
+    try:
+        return json.loads(PENDING_TARGETS_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        LOGGER.warning("Could not read %s, starting fresh", PENDING_TARGETS_FILE)
+        return {}
+
+
+def save_target_store(store: dict) -> None:
+    PENDING_TARGETS_FILE.write_text(json.dumps(store, indent=2))
+
+
+def approved_targets() -> set[str]:
+    store = load_target_store()
+    return {t.lower() for t, info in store.items() if info.get("status") == "approved"}
+
+
+def admin_chat_id() -> str:
+    explicit = os.getenv("ADMIN_CHAT_ID", "").strip()
+    if explicit:
+        return explicit
+    allowed = sorted(parse_csv_env("ALLOWED_CHAT_IDS"))
+    return allowed[0] if allowed else ""
+
+
+def target_approval_keyboard(target: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("✅ Approve", callback_data=f"approve_target:{target}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_target:{target}"),
+        ]]
+    )
 
 
 @dataclass
@@ -108,11 +148,45 @@ async def begin_udp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def receive_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     target = update.effective_message.text.strip().lower()
-    allowlist = {item.lower() for item in parse_csv_env("TARGET_ALLOWLIST")}
+    allowlist = {item.lower() for item in parse_csv_env("TARGET_ALLOWLIST")} | approved_targets()
     if target not in allowlist:
+        store = load_target_store()
+        entry = store.get(target)
+        if entry and entry.get("status") == "pending":
+            await update.effective_message.reply_text(
+                "⏳ This target is already awaiting admin approval. Try again once it's approved."
+            )
+            return TARGET
+        if entry and entry.get("status") == "rejected":
+            await update.effective_message.reply_text(
+                "⛔ This target was previously rejected by the admin."
+            )
+            return TARGET
+
+        store[target] = {
+            "status": "pending",
+            "requested_by_chat_id": update.effective_chat.id,
+            "requested_by_name": update.effective_user.full_name if update.effective_user else "",
+        }
+        save_target_store(store)
+
         await update.effective_message.reply_text(
-            "Target is not in TARGET_ALLOWLIST. Add only a server you own to .env, restart the bot, and try again."
+            "📨 Target is not pre-approved. Your request has been sent to the admin for approval."
         )
+
+        admin_id = admin_chat_id()
+        if admin_id:
+            requester = update.effective_user.full_name if update.effective_user else "Unknown"
+            await context.bot.send_message(
+                admin_id,
+                "🔔 <b>New target approval request</b>\n"
+                f"Target: <code>{html.escape(target)}</code>\n"
+                f"Requested by: {html.escape(requester)} (<code>{update.effective_chat.id}</code>)",
+                parse_mode="HTML",
+                reply_markup=target_approval_keyboard(target),
+            )
+        else:
+            LOGGER.warning("No ADMIN_CHAT_ID/ALLOWED_CHAT_IDS configured to notify for approval.")
         return TARGET
     context.user_data["draft"].target = target
     context.user_data["step"] = PORT
@@ -266,6 +340,51 @@ async def stop_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text(text, reply_markup=main_keyboard())
 
 
+async def handle_target_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin taps Approve/Reject on a pending target request."""
+    query = update.callback_query
+    await query.answer()
+
+    requester_id = update.effective_user.id if update.effective_user else None
+    if str(requester_id) != admin_chat_id():
+        await query.answer("Only the admin can approve or reject targets.", show_alert=True)
+        return
+
+    action, _, target = query.data.partition(":")
+    store = load_target_store()
+    entry = store.get(target)
+    if not entry or entry.get("status") != "pending":
+        await query.edit_message_text("This request is no longer pending.")
+        return
+
+    if action == "approve_target":
+        entry["status"] = "approved"
+        store[target] = entry
+        save_target_store(store)
+        await query.edit_message_text(f"✅ Approved target: {html.escape(target)}")
+        try:
+            await context.bot.send_message(
+                entry["requested_by_chat_id"],
+                f"✅ Your target <code>{html.escape(target)}</code> was approved. You can start the test now.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            LOGGER.exception("Could not notify requester of approval")
+    else:
+        entry["status"] = "rejected"
+        store[target] = entry
+        save_target_store(store)
+        await query.edit_message_text(f"❌ Rejected target: {html.escape(target)}")
+        try:
+            await context.bot.send_message(
+                entry["requested_by_chat_id"],
+                f"❌ Your target <code>{html.escape(target)}</code> was rejected by the admin.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            LOGGER.exception("Could not notify requester of rejection")
+
+
 async def cancel_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("draft", None)
     context.user_data.pop("step", None)
@@ -308,6 +427,7 @@ def build_application(token: str) -> Application:
     application.add_handler(CallbackQueryHandler(cancel_draft, pattern="^cancel_draft$"))
     application.add_handler(CallbackQueryHandler(show_status, pattern="^status$"))
     application.add_handler(CallbackQueryHandler(stop_test, pattern="^stop$"))
+    application.add_handler(CallbackQueryHandler(handle_target_decision, pattern="^(approve_target|reject_target):"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_text))
     return application
 
