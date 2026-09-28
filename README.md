@@ -1,47 +1,96 @@
 # Game Server Load Bot
 
-A Telegram-controlled, bounded UDP load simulator for testing a game server you own. It provides button-driven setup, a live countdown/status screen, real cancellation, and completion results.
+A private Telegram bot for bounded UDP simulation against a game server you own. It includes button-driven setup, live countdown/status, real cancellation, and completion results.
 
 ## Safety model
 
 - Only Telegram IDs in `ALLOWED_CHAT_IDS` can use the bot.
-- Only exact targets in `TARGET_ALLOWLIST` can be tested.
+- Only exact IPs/hostnames manually listed in `TARGET_ALLOWLIST` can be tested.
 - UDP traffic is capped at 200 packets/second for 120 seconds.
 - One test may run at a time.
 - Packets carry the recognizable marker `GAME_LOAD_TEST_V1`.
 
-This is intended for controlled validation, not denial-of-service testing. Confirm your cloud provider's load-testing policy before running it.
+This is for controlled validation, not denial-of-service testing. Confirm your cloud provider's load-testing policy before use.
 
-## EC2 setup
+## Automatic EC2 installation — four steps
 
-Ubuntu 22.04/24.04 LTS with a free-tier micro instance is enough for the bot and bounded simulator.
+Use Ubuntu Server 22.04/24.04 LTS. After connecting to the EC2 instance:
+
+### 1. Install Git
 
 ```bash
-git clone https://github.com/dhdhdh51/Shivamdh.git
+sudo apt update && sudo apt install -y git
+```
+
+### 2. Clone the project branch
+
+```bash
+git clone --branch feature/telegram-load-tester --single-branch https://github.com/dhdhdh51/Shivamdh.git
+```
+
+### 3. Open the project directory
+
+```bash
 cd Shivamdh
-git checkout feature/telegram-load-tester
-bash setup.sh
-nano .env
-.venv/bin/python bot.py
 ```
 
-In `.env`, set:
+### 4. Run the automatic installer
 
-```dotenv
-TELEGRAM_BOT_TOKEN=token-from-BotFather
-ALLOWED_CHAT_IDS=your-numeric-telegram-id
-TARGET_ALLOWLIST=your-game-server-ip-or-hostname
+```bash
+sudo bash install_ec2.sh
 ```
 
-Do not open inbound ports for this bot. Telegram polling only needs outbound HTTPS. The UDP destination port must be accepted by your game server.
+The installer automatically:
+
+- installs Python and required Ubuntu packages;
+- creates the virtual environment and installs dependencies;
+- asks privately for the BotFather token;
+- asks for allowed Telegram IDs and owned targets;
+- creates the protected `.env` file;
+- installs, enables, and starts the `game-load-bot` systemd service.
+
+Enter multiple IDs or targets with commas and no spaces:
+
+```text
+Allowed IDs: 123456789,-100123456789
+Owned targets: 203.0.113.10,game.example.com
+```
+
+`TARGET_ALLOWLIST` contains only IPs/hostnames—not ports. The game UDP port is entered in Telegram for each test. Telegram polling needs outbound HTTPS; no inbound bot port is required.
 
 ## Telegram flow
 
 1. Send `/start`.
 2. Tap **Start UDP test**.
-3. Send the allowlisted server IP/hostname.
-4. Send the UDP port, desired PPS, and duration when prompted.
-5. Tap **Run test** after reviewing the values.
-6. Tap **Status** for elapsed/remaining time or **Stop** to cancel.
+3. Enter an IP/hostname configured during installation.
+4. Enter the game UDP port, desired PPS, and duration.
+5. Review the values and tap **Run test**.
+6. Use **Status** for elapsed/remaining time or **Stop** to cancel.
 
 Commands: `/start`, `/status`, `/stop`, `/cancel`.
+
+## Service commands
+
+```bash
+sudo systemctl status game-load-bot
+sudo journalctl -u game-load-bot -f
+sudo systemctl restart game-load-bot
+sudo systemctl stop game-load-bot
+```
+
+## Update an existing installation
+
+```bash
+cd ~/Shivamdh
+git pull origin feature/telegram-load-tester
+bash setup.sh
+sudo systemctl restart game-load-bot
+```
+
+To change allowed users or targets later:
+
+```bash
+cd ~/Shivamdh
+nano .env
+sudo systemctl restart game-load-bot
+```
